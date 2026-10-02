@@ -82,6 +82,18 @@ git cherry-pick <sha>                    # or merge
 archon workflow run theriak-ship ""      # the push gate; "reingest" instead of "" when the corpus changed
 ```
 
+## Windows prerequisites (found on the first test drive, 2026-10-02)
+
+- `git config --global core.longpaths true` AND, in an admin PowerShell,
+  `New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name LongPathsEnabled -Value 1 -PropertyType DWORD -Force`.
+  Archon's worktree prefix is ~100 chars; `data/preprocessed/gkv/` holds 135-char
+  filenames. Git needs the first to create them, Python needs the second to open them.
+- Archon spawns the Claude binary directly; `claude.cmd` (npm) fails with EINVAL.
+  Run `claude install` and point `claudeBinaryPath` at `~\.local\bin\claude.exe`.
+- `bash` on PATH must be Git's, not WSL's: `$env:PATH = "C:\Program Files\Git\bin;$env:PATH"`.
+- `$BASE_BRANCH` in bash nodes is the branch the MAIN checkout is on, not
+  `worktree.baseBranch`. Do not diff against it.
+
 ## Things to expect to go wrong on the first run
 
 - **Git Bash vs PowerShell.** `bash:` nodes run in Git Bash. `dotnet`, `gh`,
