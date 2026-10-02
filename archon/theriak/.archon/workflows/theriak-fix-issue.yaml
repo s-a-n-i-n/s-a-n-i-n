@@ -1,0 +1,209 @@
+name: theriak-fix-issue
+description: |
+  Fix one GitHub issue the Theriak way: reproduce first (CLAUDE.md rule 1),
+  implement with a guard (rule 6), prove the guard goes RED mechanically,
+  run the suites for the areas touched, commit WITHOUT attribution, stop
+  before push. Pushing is the operator's word (theriak-ship).
+  Usage: archon workflow run theriak-fix-issue "#412"
+provider: claude
+model: opus
+effort: high
+interactive: true          # this workflow has an approval gate (prompt/rubric changes)
+
+nodes:
+  # ───────────────────────────── 0. where am I ─────────────────────────────
+  - id: preflight
+    bash: |
+      set -e
+      # Archon runs this in its own worktree. The venv and node_modules live in the
+      # main checkout, so locate it once (same trick as scripts/hooks/pre-commit).
+      MAIN="$(git rev-parse --git-common-dir)/.."
+      MAIN="$(cd "$MAIN" && pwd)"
+      PY=""
+      for c in "$MAIN/rag-service/.venv/Scripts/python.exe" "$MAIN/rag-service/.venv/bin/python" \
+               "$PWD/rag-service/.venv/Scripts/python.exe" "$PWD/rag-service/.venv/bin/python"; do
+        [ -x "$c" ] && { PY="$c"; break; }
+      done
+      [ -n "$PY" ] || { echo "no rag-service venv found under $MAIN or $PWD"; exit 1; }
+      printf '%s\n' "$MAIN" > "$ARTIFACTS_DIR/main-checkout"
+      printf '%s\n' "$PY"   > "$ARTIFACTS_DIR/python"
+      echo "worktree: $PWD"
+      echo "main:     $MAIN"
+      echo "python:   $PY"
+      echo "branch:   $(git branch --show-current)  base: $BASE_BRANCH @ $(git rev-parse --short origin/$BASE_BRANCH)"
+      echo "issue:    $ARGUMENTS"
+
+  # ───────────────────────────── 1. frame it ───────────────────────────────
+  - id: frame
+    depends_on: [preflight]
+    context: fresh
+    allowed_tools: [Read, Grep, Glob, Bash]
+    prompt: |
+      Issue: $ARGUMENTS. Read it with `gh issue view <number> --json title,body,labels,comments`.
+      Then read CLAUDE.md ("The rules that matter most"), lessons-learned §5, and
+      the "Current track" line in docs/operational/backlog-plan.md.
+
+      You are in an Archon worktree. The Python to use is in `$ARTIFACTS_DIR/python`
+      (read the file; do not guess a path). Do not start docker, do not touch prod,
+      do not run anything paid.
+
+      Rule 1: reproduce the symptom before believing the ticket's cause. Run the
+      thing. Print the branch (rule 0.6). Then write $ARTIFACTS_DIR/frame.md:
+      - symptom reproduced: yes/no, with the command and its output
+      - the actual cause, labelled "verified by <what you executed>"
+      - the files involved
+      - whether the fix must touch a prompt, a rubric, an eval bank, or a baseline
+      - which of rules 5, 6, 7 apply
+      - if the current track says this issue should wait: say so
+    output_format:
+      type: object
+      properties:
+        reproduced: { type: boolean }
+        cause: { type: string }
+        touches_prompt_or_rubric: { type: boolean }
+        off_track: { type: boolean }
+      required: [reproduced, cause, touches_prompt_or_rubric, off_track]
+
+  - id: not-reproduced
+    depends_on: [frame]
+    when: "$frame.output.reproduced == false"
+    model: sonnet
+    prompt: |
+      The symptom in $ARGUMENTS did not reproduce. Read $ARTIFACTS_DIR/frame.md and
+      post ONE short comment on the issue: exactly what was executed, what came
+      back, and what evidence would change the picture (CLAUDE.md rule 1). Do not
+      change code. No attribution anywhere.
+
+  - id: needs-eval-approval
+    depends_on: [frame]
+    when: "$frame.output.reproduced == true && $frame.output.touches_prompt_or_rubric == true"
+    approval:
+      message: |
+        This fix touches a prompt, rubric, bank or baseline. CLAUDE.md rule 5: no
+        prompt change without an eval run, and eval runs cost money.
+        Approve to let the implementation proceed. This is NOT approval for a paid
+        run - that stays a separate explicit yes.
+        Cause: $frame.output.cause
+
+  # ───────────────────────────── 2. implement + red-proof ──────────────────
+  - id: implement
+    depends_on: [frame, needs-eval-approval]
+    trigger_rule: none_failed_min_one_success
+    when: "$frame.output.reproduced == true"
+    loop_group:
+      max_iterations: 3
+      fresh_context: true
+      until_bash: grep -q "RED-PROOF OK" "$ARTIFACTS_DIR/red-proof.txt" 2>/dev/null
+      nodes:
+        - id: code
+          prompt: |
+            Read $ARTIFACTS_DIR/frame.md. Implement the fix for $ARGUMENTS with a
+            guard in the SAME change (CLAUDE.md rule 6). Minimal diff, no
+            opportunistic refactors, no new dependencies. Python to use is in
+            $ARTIFACTS_DIR/python.
+
+            Previous iteration's red-proof result, if any (fix what it says):
+            $LOOP_PREV.red-proof.output
+
+            When the code and the guard are written, produce THREE files - the next
+            step is a script, it cannot ask you questions:
+            1. $ARTIFACTS_DIR/guard-cmd.txt - ONE shell command that runs ONLY the
+               new guard and exits non-zero when it fails. Examples:
+                 "$(cat $ARTIFACTS_DIR/python)" -m pytest rag-service/tests/test_x.py::test_y -q -x
+                 dotnet test api-gateway/Theriak.Api.Tests --filter FullyQualifiedName~Foo --nologo
+            2. $ARTIFACTS_DIR/bug.patch - a `git diff` patch that REINSTATES the bug
+               by reverting ONLY the production-code part of your fix (not the
+               guard). `git diff -- <prod files> | sed ...` is fine; test it with
+               `git apply --check -R`. It must apply cleanly and reverse cleanly.
+            3. $ARTIFACTS_DIR/commit-msg.txt - subject line "<area>: <what changed>
+               (#N)", then a body that says what the user-visible behaviour is
+               now, what was measured, and leaves one blank line for the red-proof
+               line that gets appended. No Co-Authored-By, no AI attribution.
+            Also write $ARTIFACTS_DIR/consumers.md naming everything that consumes
+            what you changed (rule 7) and whether you ran it.
+        - id: red-proof
+          depends_on: [code]
+          bash: |
+            # Prove the guard fails with the bug reinstated, then restore. No stash:
+            # apply the reverse patch, run the guard, apply it back.
+            set -u
+            cd "$(git rev-parse --show-toplevel)"
+            for f in guard-cmd.txt bug.patch; do
+              [ -s "$ARTIFACTS_DIR/$f" ] || { echo "RED-PROOF FAILED: $f missing or empty" | tee "$ARTIFACTS_DIR/red-proof.txt"; exit 0; }
+            done
+            GUARD="$(cat "$ARTIFACTS_DIR/guard-cmd.txt")"
+            if ! sh -c "$GUARD" >"$ARTIFACTS_DIR/guard-green.log" 2>&1; then
+              echo "RED-PROOF FAILED: guard is not green WITH the fix (see guard-green.log)" | tee "$ARTIFACTS_DIR/red-proof.txt"; exit 0
+            fi
+            if ! git apply --check "$ARTIFACTS_DIR/bug.patch" 2>"$ARTIFACTS_DIR/apply.err"; then
+              echo "RED-PROOF FAILED: bug.patch does not apply: $(cat "$ARTIFACTS_DIR/apply.err")" | tee "$ARTIFACTS_DIR/red-proof.txt"; exit 0
+            fi
+            git apply "$ARTIFACTS_DIR/bug.patch"
+            if sh -c "$GUARD" >"$ARTIFACTS_DIR/guard-red.log" 2>&1; then
+              git apply -R "$ARTIFACTS_DIR/bug.patch"
+              echo "RED-PROOF FAILED: guard stayed GREEN with the bug reinstated - the guard does not guard this bug" | tee "$ARTIFACTS_DIR/red-proof.txt"; exit 0
+            fi
+            git apply -R "$ARTIFACTS_DIR/bug.patch" || { echo "RED-PROOF FAILED: could not restore the fix - worktree is dirty, stop"; exit 1; }
+            sh -c "$GUARD" >/dev/null 2>&1 || { echo "RED-PROOF FAILED: guard not green after restore"; exit 1; }
+            MSG="$(grep -m1 -iE 'assert|error|fail' "$ARTIFACTS_DIR/guard-red.log" | cut -c1-200)"
+            echo "RED-PROOF OK: $GUARD" | tee "$ARTIFACTS_DIR/red-proof.txt"
+            echo "red failure line: $MSG" | tee -a "$ARTIFACTS_DIR/red-proof.txt"
+
+  # ───────────────────────────── 3. suites for touched areas ──────────────
+  - id: suites
+    depends_on: [implement]
+    bash: |
+      set -e
+      PY="$(cat "$ARTIFACTS_DIR/python")"
+      MAIN="$(cat "$ARTIFACTS_DIR/main-checkout")"
+      CHANGED="$(git diff --name-only origin/$BASE_BRANCH...HEAD; git diff --name-only; git ls-files --others --exclude-standard)"
+      echo "$CHANGED" | sort -u > "$ARTIFACTS_DIR/changed-files.txt"
+      ran=0
+      if echo "$CHANGED" | grep -q '^rag-service/'; then
+        echo "== rag-service pytest (not integration)"; (cd rag-service && "$PY" -m pytest -m "not integration" -q --tb=short -p no:cacheprovider); ran=1
+      fi
+      if echo "$CHANGED" | grep -q '^api-gateway/'; then
+        echo "== api-gateway dotnet test"; (cd api-gateway && dotnet test Theriak.Api.Tests/Theriak.Api.Tests.csproj --nologo -v minimal); ran=1
+      fi
+      if echo "$CHANGED" | grep -q '^frontend/'; then
+        echo "== frontend"; cd frontend
+        [ -d node_modules ] || { [ -d "$MAIN/frontend/node_modules" ] && ln -s "$MAIN/frontend/node_modules" node_modules || npm ci --no-audit --no-fund; }
+        npm run lint:drift && npm run test:scripts && npx ng test --watch=false; cd ..; ran=1
+      fi
+      if echo "$CHANGED" | grep -qE '^(data/|docs/operational/|scripts/)'; then
+        echo "== doc/data guards"; (cd rag-service && "$PY" -m pytest tests -q -k "guard or doc or plan or queue" --tb=short -p no:cacheprovider) || true
+      fi
+      [ "$ran" = 1 ] || echo "no code area touched - only the guard ran"
+
+  # ───────────────────────────── 4. commit, no attribution ────────────────
+  - id: commit
+    depends_on: [suites]
+    bash: |
+      set -e
+      [ -s "$ARTIFACTS_DIR/commit-msg.txt" ] || { echo "commit-msg.txt missing"; exit 1; }
+      cp "$ARTIFACTS_DIR/commit-msg.txt" "$ARTIFACTS_DIR/commit-final.txt"
+      printf '\n%s\n' "$(cat "$ARTIFACTS_DIR/red-proof.txt")" >> "$ARTIFACTS_DIR/commit-final.txt"
+      if grep -qiE "co-authored-by|claude-session|generated with|anthropic" "$ARTIFACTS_DIR/commit-final.txt"; then
+        echo "attribution text in commit message - refusing (CLAUDE.md highest rule)"; exit 1
+      fi
+      # stage only what the fix touched - never scratch, never .archon run state
+      git add -- $(cat "$ARTIFACTS_DIR/changed-files.txt" | grep -vE '^(\.archon/(artifacts|logs|state)|.*\.(tmp|scratch)\.md$)')
+      git diff --cached --stat
+      git commit -q -F "$ARTIFACTS_DIR/commit-final.txt"
+      echo "committed $(git rev-parse --short HEAD) on $(git branch --show-current) - NOT pushed"
+
+  # ───────────────────────────── 5. rule-0 handover ───────────────────────
+  - id: handover
+    depends_on: [commit]
+    context: fresh
+    model: sonnet
+    prompt: |
+      Write the CLAUDE.md rule-0 plain-English summary to $ARTIFACTS_DIR/summary.md
+      for someone who did not watch this run: what $ARGUMENTS is for, what changed
+      for the user, the executed evidence (quote from $ARTIFACTS_DIR/frame.md),
+      the red-proof line from $ARTIFACTS_DIR/red-proof.txt, what the suites said
+      ($suites.output - summarise, do not paste), what is NOT done, and the one
+      trap for whoever picks this up. Short sentences. CET/CEST times.
+      Then post that summary as a comment on the issue and end with:
+      "Committed on branch <branch> as <sha>. Not pushed - run theriak-ship."
+      No attribution anywhere.

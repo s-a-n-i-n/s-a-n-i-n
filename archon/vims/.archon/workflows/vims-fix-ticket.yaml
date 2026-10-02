@@ -1,0 +1,100 @@
+name: vims-fix-ticket
+description: >
+  One YouTrack ticket, the VIMS way: read the ticket, print the branch truth
+  (production vs main-clean), investigate before touching anything, fix with a
+  Playwright spec that actually exercises the bug, build + unit tests, stop
+  before commit. "gotovo" is a separate workflow.
+  Usage: archon workflow run vims-fix-ticket "VIMS-912"
+provider: claude
+model: opus
+worktree:
+  enabled: false     # the dev servers (4200 / 58841) and SQL Server run on the live checkout; a worktree cannot see them
+
+nodes:
+  - id: branch-truth
+    bash: |
+      set -e
+      git fetch origin production main-clean --quiet
+      echo "on: $(git branch --show-current)"
+      echo "vs production: $(git rev-list --left-right --count origin/production...HEAD | awk '{print "behind "$1" ahead "$2}')"
+      echo "vs main-clean: $(git rev-list --left-right --count origin/main-clean...HEAD | awk '{print "behind "$1" ahead "$2}')"
+      git status --porcelain | head -20
+
+  - id: servers
+    bash: |
+      pwsh tools/dev-servers.ps1 status
+    retry: { max_attempts: 0 }
+
+  - id: ticket
+    depends_on: [branch-truth, servers]
+    model: haiku
+    allowed_tools: [Bash, Read]
+    prompt: |
+      Fetch $ARGUMENTS from YouTrack (docs/YOUTRACK.md, env VIMS_YOUTRACK_URL /
+      VIMS_YOUTRACK_TOKEN). Write $ARTIFACTS_DIR/ticket.md: summary, state,
+      acceptance criteria, which role sees the screen (roles are not a hierarchy),
+      area (frontend / backend / database / report).
+    output_format:
+      type: object
+      properties:
+        area: { type: string, enum: [frontend, backend, database, report, mixed] }
+        state: { type: string }
+      required: [area, state]
+
+  - id: investigate
+    depends_on: [ticket]
+    context: fresh
+    allowed_tools: [Read, Grep, Glob, Bash]
+    prompt: |
+      Read CLAUDE.md, $ARTIFACTS_DIR/ticket.md and the .claude/rules/ file for
+      $ticket.output.area. Check Serena for a memory on this topic (commandment 5).
+      Reproduce the bug against the running dev servers with the right role
+      account. Do NOT change code. Write $ARTIFACTS_DIR/investigation.md:
+      reproduced yes/no, the executed evidence, root cause, minimum data shape a
+      regression test needs (5-10 distinct values for sort/filter cases).
+
+  - id: fix
+    depends_on: [investigate]
+    context: fresh
+    prompt: |
+      Implement the fix for $ARGUMENTS per $ARTIFACTS_DIR/investigation.md.
+      Scoped to the task, no refactors, follow the neighbouring controller /
+      component. EF6, not EF Core. New UI strings get the i18n-todo comment.
+      Add a Playwright spec under Playwright/tests/<area>/ that puts the system in
+      the ticket's failing state first (.claude/rules/playwright.md). If the
+      change is backend or report, say so in $ARTIFACTS_DIR/needs-restart.txt and
+      stop: the operator restarts the backend.
+
+  - id: build-and-unit
+    depends_on: [fix]
+    bash: |
+      set -e
+      dotnet build -p:SkipClientBuild=true --nologo -v minimal
+      dotnet test VoterManagementSystem.BusinessLayer.Tests/VoterManagementSystem.BusinessLayer.Tests.csproj -p:SkipClientBuild=true --nologo -v minimal
+      (cd VoterManagementSystem.ClientApp.v20 && npx tsc --noEmit -p tsconfig.json)
+
+  - id: restart-gate
+    depends_on: [build-and-unit]
+    when: "$ticket.output.area != 'frontend'"
+    approval:
+      message: "Backend/report change built. Restart the WebApi dev server, then approve to run the Playwright spec."
+
+  - id: e2e
+    depends_on: [build-and-unit, restart-gate]
+    trigger_rule: none_failed_min_one_success
+    bash: |
+      set -e
+      cd Playwright
+      SPEC=$(git status --porcelain tests | awk '{print $2}' | grep -E '\.spec\.ts$' | head -5)
+      [ -n "$SPEC" ] || { echo "no new/changed spec under Playwright/tests - a fix without a spec is not verified"; exit 1; }
+      npx playwright test $SPEC --reporter=line
+
+  - id: report
+    depends_on: [e2e]
+    model: haiku
+    prompt: |
+      TLDR first. Write $ARTIFACTS_DIR/summary.md: what the user sees now, the
+      spec path and its key assertions, build/test results as a pass/fail table,
+      what was NOT verified. Nothing is committed. Say: "waiting for gotovo".
+      Then clean up: kill nothing the operator started; delete test-results*,
+      playwright-report, .playwright-mcp; `git status` must match the start plus the fix.

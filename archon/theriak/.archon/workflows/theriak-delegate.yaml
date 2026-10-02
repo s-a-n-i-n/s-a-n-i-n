@@ -1,0 +1,76 @@
+name: theriak-delegate
+description: >
+  The brief -> cheap worker -> orchestrator review loop you rebuild by hand every
+  session. Worker runs on the cheap model in the run's own worktree with a tool
+  allowlist and a turn cap; the reviewer reruns tests itself and red-proofs.
+  Usage: archon workflow run theriak-delegate "path/to/brief.md"
+provider: claude
+
+nodes:
+  - id: brief-check
+    model: haiku
+    allowed_tools: [Read]
+    prompt: |
+      Read the brief at $ARGUMENTS. It must state: scope (files allowed), done
+      criteria, the test command, and "no push, no attribution". Return ok=false
+      with what is missing otherwise.
+    output_format:
+      type: object
+      properties: { ok: { type: boolean }, missing: { type: string } }
+      required: [ok]
+
+  - id: stop
+    depends_on: [brief-check]
+    when: "$brief-check.output.ok == false"
+    cancel: "Brief incomplete: $brief-check.output.missing"
+
+  - id: worker
+    depends_on: [brief-check]
+    when: "$brief-check.output.ok == true"
+    context: fresh
+    model: sonnet            # swap for your GLM/DeepSeek route once Archon's provider for it is configured
+    effort: medium
+    maxBudgetUsd: 3
+    idle_timeout: 900000
+    denied_tools: [WebSearch, WebFetch]
+    prompt: |
+      You are an implementation worker. Follow the brief at $ARGUMENTS exactly.
+      Never read .env or any secrets file. Never push. Never add attribution.
+      When done, write $ARTIFACTS_DIR/worker-report.md: files changed, tests run
+      with their output, anything you could not do.
+
+  - id: tests
+    depends_on: [worker]
+    bash: |
+      set -e
+      CMD=$(grep -m1 -E '^test command:' $ARGUMENTS | sed 's/^test command: *//')
+      [ -n "$CMD" ] || { echo "no 'test command:' line in brief"; exit 1; }
+      sh -c "$CMD"
+
+  - id: review
+    depends_on: [tests]
+    context: fresh
+    model: opus
+    effort: high
+    prompt: |
+      Review the worker's diff (`git diff $worker.execution.checkoutStart`) against
+      the brief at $ARGUMENTS and CLAUDE.md rules 6 and 7. Red-proof every new
+      guard yourself (reinstate the bug, watch it fail, restore). Remove dead
+      code. Write $ARTIFACTS_DIR/review.md with verdict ACCEPT or REJECT and why.
+    output_format:
+      type: object
+      properties: { verdict: { type: string, enum: [ACCEPT, REJECT] }, reason: { type: string } }
+      required: [verdict]
+
+  - id: commit
+    depends_on: [review]
+    when: "$review.output.verdict == 'ACCEPT'"
+    bash: |
+      set -e
+      git add -A && git commit -q -m "$(grep -m1 -E '^commit:' $ARGUMENTS | sed 's/^commit: *//')"
+      echo "committed on $(git branch --show-current) in the run worktree - cherry-pick or merge, then theriak-ship"
+
+  - id: rejected
+    depends_on: [review]
+    when: "$review.output.verdict == 'REJECT'"
+    cancel: "Worker output rejected: $review.output.reason (see review.md)"

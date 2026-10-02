@@ -1,0 +1,84 @@
+name: theriak-ship
+description: >
+  The "push it" macro. Pre-push gate (prod idle, nothing upstream, no trailers),
+  one approval, push to master, watch Deploy, verify the served sha and /health,
+  optional reingest dry-run -> real -> Qdrant count. Replaces 6-10 "is deploy done?" turns.
+  Usage: archon workflow run theriak-ship "reingest"   (or "" for a plain deploy)
+provider: claude
+model: sonnet
+interactive: true
+worktree:
+  enabled: false          # operate on the real checkout; this workflow pushes what is already committed
+mutates_checkout: false
+
+nodes:
+  - id: gate
+    bash: |
+      set -e
+      git fetch origin master --quiet
+      AHEAD=$(git rev-list --count origin/master..HEAD); BEHIND=$(git rev-list --count HEAD..origin/master)
+      echo "ahead=$AHEAD behind=$BEHIND"
+      [ "$BEHIND" = "0" ] || { echo "master moved upstream; rebase first"; exit 1; }
+      [ "$AHEAD" != "0" ] || { echo "nothing to push"; exit 1; }
+      git log origin/master..HEAD --format=%B | grep -qiE "co-authored-by|claude-session|generated with" && { echo "attribution trailer in unpushed commits"; exit 1; }
+      # prod must be idle: a deploy waits 15 min for a running ingest/eval, then FAILS (#464)
+      BUSY=$(ssh theriak-prod 'docker top theriak-rag-service-1 2>/dev/null | grep -cE "eval_runner|ingest" || true')
+      [ "${BUSY:-0}" = "0" ] || { echo "prod busy: $BUSY eval/ingest processes - do not push"; exit 1; }
+      git log origin/master..HEAD --oneline
+
+  - id: approve-push
+    depends_on: [gate]
+    approval:
+      message: "Push these commits to master? (this deploys production, ~19 min)\n$gate.output"
+
+  - id: push
+    depends_on: [approve-push]
+    bash: git push origin HEAD:master
+
+  - id: watch-deploy
+    depends_on: [push]
+    bash: |
+      set -e
+      sleep 60
+      RUN=$(gh run list --workflow=deploy.yml --branch master --limit 1 --json databaseId -q '.[0].databaseId')
+      gh run watch "$RUN" --exit-status --interval 30
+    idle_timeout: 2700000
+
+  - id: verify-prod
+    depends_on: [watch-deploy]
+    bash: |
+      set -e
+      WANT=$(git rev-parse HEAD)
+      GOT=$(curl -fsS https://pilot.theriak.eu/api/health | python3 -c 'import sys,json;print(json.load(sys.stdin).get("git_sha",""))')
+      echo "want=$WANT got=$GOT"
+      case "$WANT" in "$GOT"*) echo "prod serves the pushed commit";; *) echo "PROD SHA MISMATCH"; exit 1;; esac
+      curl -fsS https://pilot.theriak.eu/api/health | python3 -m json.tool | grep -E '"(status|llm_engine|llm_endpoint)"'
+    retry: { max_attempts: 3, delay_ms: 20000, on_error: all }
+
+  - id: reingest-dry
+    depends_on: [verify-prod]
+    when: "$ARGUMENTS == 'reingest'"
+    bash: ssh theriak-prod 'docker exec theriak-rag-service-1 python scripts/ingest.py --dry-run'
+
+  - id: approve-reingest
+    depends_on: [reingest-dry]
+    approval:
+      message: "Dry-run above. Run the real re-ingest on prod (~8 min, kills nothing but blocks deploys)?"
+
+  - id: reingest
+    depends_on: [approve-reingest]
+    bash: |
+      set -e
+      ssh theriak-prod 'docker exec theriak-rag-service-1 python scripts/ingest.py'
+      ssh theriak-prod 'curl -fsS http://127.0.0.1:6333/collections | python3 -m json.tool' | grep -E 'name|points_count' || true
+
+  - id: record
+    depends_on: [verify-prod, reingest]
+    trigger_rule: none_failed_min_one_success
+    model: haiku
+    prompt: |
+      Append one dated line to docs/operational/corpus-queue.md if a reingest ran
+      ($reingest.output), and write $ARTIFACTS_DIR/summary.md: commits shipped
+      ($gate.output), deploy result, served sha ($verify-prod.output), what was
+      verified on prod and what was not. CET/CEST timestamps. No attribution.
+      Commit the doc change locally only.

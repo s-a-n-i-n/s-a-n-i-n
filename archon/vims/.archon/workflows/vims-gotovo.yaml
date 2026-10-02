@@ -1,0 +1,67 @@
+name: vims-gotovo
+description: >
+  The "gotovo" macro. Commit as VIMS-###, no trailers, push, optional PR to
+  production, YouTrack comment in simple Bosnian for @nermina with readback
+  check, state -> In test (never Fixed). One approval, then no more questions.
+  Usage: archon workflow run vims-gotovo "VIMS-912 | kratak opis | pr"   (drop "| pr" to push only)
+provider: claude
+model: sonnet
+worktree:
+  enabled: false
+mutates_checkout: true
+
+nodes:
+  - id: parse
+    bash: |
+      ID=$(echo "$ARGUMENTS" | cut -d'|' -f1 | xargs); MSG=$(echo "$ARGUMENTS" | cut -d'|' -f2 | xargs); PR=$(echo "$ARGUMENTS" | cut -d'|' -f3 | xargs)
+      echo "$ID" | grep -qE '^VIMS-[0-9]+$' || { echo "first field must be VIMS-###"; exit 1; }
+      printf '%s\n%s\n%s\n' "$ID" "$MSG" "$PR" > $ARTIFACTS_DIR/args
+      echo "id=$ID msg=$MSG pr=${PR:-no}"
+
+  - id: preview
+    depends_on: [parse]
+    bash: |
+      set -e
+      echo "branch: $(git branch --show-current)  base: origin/production"
+      git fetch origin production --quiet
+      echo "behind production: $(git rev-list --count HEAD..origin/production)"
+      git status --porcelain
+      git diff --stat
+
+  - id: approve
+    depends_on: [preview]
+    approval:
+      message: "gotovo? This commits, pushes and comments on YouTrack.\n$preview.output"
+
+  - id: commit-push
+    depends_on: [approve]
+    bash: |
+      set -e
+      ID=$(sed -n 1p $ARTIFACTS_DIR/args); MSG=$(sed -n 2p $ARTIFACTS_DIR/args)
+      git add -A
+      git commit -q -m "$ID: $MSG"
+      git log -1 --format=%B | grep -qiE "co-authored|claude|anthropic" && { echo "attribution in commit - refusing"; exit 1; }
+      git push -u origin "$(git branch --show-current)"
+      git rev-parse --short HEAD
+
+  - id: pr
+    depends_on: [commit-push]
+    when: "$ARGUMENTS == '*| pr'"
+    bash: |
+      ID=$(sed -n 1p $ARTIFACTS_DIR/args); MSG=$(sed -n 2p $ARTIFACTS_DIR/args)
+      gh pr create --base production --title "$ID: $MSG" --body "$ID" 2>&1 | tail -1
+
+  - id: youtrack
+    depends_on: [commit-push, pr]
+    trigger_rule: none_failed_min_one_success
+    model: sonnet
+    allowed_tools: [Read, Bash]
+    prompt: |
+      Ticket: $(sed -n 1p $ARTIFACTS_DIR/args). Read docs/YOUTRACK.md rules 2, 5, 6.
+      Write a comment in simple Bosnian for @nermina: what is in place on the
+      screen and how to check it. Present tense. Grep your draft for "already",
+      "no code", "existing", "predates", "was done" and rewrite any hit. No
+      credentials, no em-dashes. Post it via the API as UTF-8 bytes, read it
+      back and confirm the preview contains data-md-type="user-id:nermina".
+      Then set state to In test (63-12), assignee sanin. Never Fixed.
+      Reply with: commit sha ($commit-push.output), PR url if any, comment id.
