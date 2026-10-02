@@ -2,4 +2,5 @@
 defaults:
   loadDefaultCommands: true
   loadDefaultWorkflows: false     # bundled create-pr/review commands add attribution and open PRs; we never do either here
-baseBranch: master
+worktree:
+  baseBranch: master

@@ -30,7 +30,7 @@ nodes:
       echo "worktree: $PWD"
       echo "main:     $MAIN"
       echo "python:   $PY"
-      echo "branch:   $(git branch --show-current)  base: $BASE_BRANCH @ $(git rev-parse --short origin/$BASE_BRANCH)"
+      echo "branch:   $(git branch --show-current)  base: ${BASE_BRANCH:-master} @ $(git rev-parse --short origin/${BASE_BRANCH:-master})"
       echo "issue:    $ARGUMENTS"
 
   # ───────────────────────────── 1. frame it ───────────────────────────────
@@ -156,7 +156,7 @@ nodes:
       set -e
       PY="$(cat "$ARTIFACTS_DIR/python")"
       MAIN="$(cat "$ARTIFACTS_DIR/main-checkout")"
-      CHANGED="$(git diff --name-only origin/$BASE_BRANCH...HEAD; git diff --name-only; git ls-files --others --exclude-standard)"
+      CHANGED="$(git diff --name-only origin/${BASE_BRANCH:-master}...HEAD; git diff --name-only; git ls-files --others --exclude-standard)"
       echo "$CHANGED" | sort -u > "$ARTIFACTS_DIR/changed-files.txt"
       ran=0
       if echo "$CHANGED" | grep -q '^rag-service/'; then
