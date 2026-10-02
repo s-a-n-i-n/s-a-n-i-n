@@ -38,12 +38,20 @@ archon workflow list             # theriak-* visible, bundled ones hidden (confi
 
 ## First run
 
-Pick a pure rag-service bug with no prompt/rubric change so the paid-run
-gate stays out of the way. `#300` ("check_citation_correct_or_hedged awards a
-PASS for citing nothing at all") is one function and one test — ideal.
+Pick a pure code bug with no prompt/rubric change so the paid-run gate stays
+out of the way. `#271` ("an interrupted eval is recorded as a completed run
+with mass failures") is the one: the issue already states the fix shape
+(write `EvalRuns.Status`, assert result count vs `TotalQuestions`, make
+`eval_compare` exit 2 on an incomplete run) and its step 4 is a red-proofable
+guard (truncate a stored run JSON to 12 of 83 results, assert the comparison
+refuses). It touches api-gateway and rag-service, so `suites` runs both.
+
+Do NOT start with `#300`: its own body says it is a rubric-shape question that
+must be measured against the whole bank in both directions — that trips the
+eval-approval gate and needs a paid run.
 
 ```powershell
-archon workflow run theriak-fix-issue "#300"
+archon workflow run theriak-fix-issue "#271"
 ```
 
 What you will see, in order:
