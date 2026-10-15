@@ -1,0 +1,578 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CI Dashboard</title>
+<style>
+:root {
+  --bg: #f4f4f2; --surface: #fcfcfb; --border: #e2e2de;
+  --ink: #1d1d1b; --ink-2: #55554f; --ink-3: #8a8a83;
+  --busy: #2a6fdb; --idle: #0ca30c; --offline: #d03b3b; --warn: #c98a00;
+  --ok: #0ca30c; --fail: #d03b3b; --muted-mark: #c9c9c3;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111110; --surface: #1a1a19; --border: #2e2e2b;
+    --ink: #ededea; --ink-2: #b4b4ad; --ink-3: #7d7d76;
+    --busy: #5b9bff; --warn: #fab219; --muted-mark: #45453f;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111110; --surface: #1a1a19; --border: #2e2e2b;
+  --ink: #ededea; --ink-2: #b4b4ad; --ink-3: #7d7d76;
+  --busy: #5b9bff; --warn: #fab219; --muted-mark: #45453f;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+a { color: inherit; }
+header.top {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 14px 20px; border-bottom: 1px solid var(--border);
+}
+header.top h1 { font-size: 16px; margin: 0; letter-spacing: .02em; }
+.meta { color: var(--ink-3); font-size: 12px; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); display: inline-block; margin-right: 6px; }
+.live-dot.on { background: var(--ok); animation: pulse 2s infinite; }
+.live-dot.err { background: var(--fail); }
+@keyframes pulse { 50% { opacity: .35; } }
+button {
+  font: inherit; font-size: 12px; color: var(--ink-2); background: transparent;
+  border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; cursor: pointer;
+}
+button:hover { color: var(--ink); border-color: var(--ink-3); }
+main { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px 20px 24px; max-width: 1400px; margin: 0 auto; }
+@media (max-width: 860px) { main { grid-template-columns: 1fr; padding: 12px 16px; } header.top { padding: 12px 16px; } }
+.project { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.project > h2 {
+  margin: 0; padding: 14px 18px; font-size: 18px; display: flex; align-items: baseline; gap: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.project > h2 a { text-decoration: none; }
+.project > h2 .branch { font: 12px var(--mono); color: var(--ink-3); font-weight: 400; }
+.chip { margin-left: auto; font-size: 12px; font-weight: 500; padding: 2px 9px; border-radius: 99px; border: 1px solid var(--border); color: var(--ink-2); white-space: nowrap; }
+.chip.ok::before { content: "✓ "; color: var(--ok); }
+.chip.fail::before { content: "✗ "; color: var(--fail); }
+section.tile { padding: 14px 18px; border-bottom: 1px solid var(--border); }
+section.tile:last-child { border-bottom: 0; }
+.tile h3 { margin: 0 0 10px; font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); display: flex; justify-content: space-between; }
+.tile h3 span { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; }
+.row2 > section.tile:first-child { border-right: 1px solid var(--border); }
+@media (max-width: 480px) { .row2 { grid-template-columns: 1fr; } .row2 > section.tile:first-child { border-right: 0; border-bottom: 1px solid var(--border); } }
+.big { font-size: 34px; font-weight: 650; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.big small { font-size: 18px; color: var(--ink-3); font-weight: 500; }
+.sub { color: var(--ink-2); font-size: 13px; }
+.sub.mute { color: var(--ink-3); }
+.warn-text { color: var(--fail); font-weight: 500; }
+.stats { display: flex; gap: 22px; margin-bottom: 12px; flex-wrap: wrap; }
+.stat .n { font-size: 30px; font-weight: 650; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.stat .l { font-size: 12px; color: var(--ink-2); display: flex; align-items: center; gap: 6px; }
+.sw { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+.sw.busy { background: var(--busy); } .sw.idle { background: var(--idle); }
+.sw.offline { background: transparent; border: 2px solid var(--offline); }
+.sw.queued { background: transparent; border: 2px solid var(--warn); }
+.pools { display: grid; grid-template-columns: max-content 1fr max-content; gap: 6px 12px; align-items: center; }
+.pool-name { font: 12px var(--mono); color: var(--ink-2); }
+.squares { display: flex; gap: 3px; flex-wrap: wrap; }
+.sq { width: 16px; height: 16px; border-radius: 4px; position: relative; }
+.sq.busy { background: var(--busy); } .sq.idle { background: var(--idle); }
+.sq.offline { border: 2px solid var(--offline); background: repeating-linear-gradient(45deg, transparent 0 3px, color-mix(in srgb, var(--offline) 35%, transparent) 3px 4px); }
+.sq.none { white-space: nowrap; border: 1px dashed var(--ink-3); width: auto; padding: 0 6px; height: 16px; font-size: 10px; line-height: 14px; color: var(--ink-3); }
+.pool-q { font-size: 12px; color: var(--ink-3); text-align: right; white-space: nowrap; }
+.pool-q.hot { color: var(--fail); font-weight: 600; }
+.joblist { list-style: none; margin: 8px 0 0; padding: 0; font-size: 12px; }
+.joblist li { display: flex; gap: 8px; padding: 3px 0; color: var(--ink-2); min-width: 0; }
+.joblist li .t { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--ink-3); white-space: nowrap; }
+.joblist li .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.joblist li a { text-decoration: none; }
+.joblist li a:hover { text-decoration: underline; }
+.dots { display: flex; gap: 6px; margin: 10px 0 6px; flex-wrap: wrap; }
+.dot { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 700; color: #fff; text-decoration: none; }
+.dot.success { background: var(--ok); } .dot.failure { background: var(--fail); }
+.dot.empty { border: 1px dashed var(--muted-mark); }
+.dot:hover { outline: 2px solid var(--ink-3); outline-offset: 2px; }
+.err { color: var(--fail); font-size: 12px; margin-top: 6px; }
+.sha { font: 12px var(--mono); }
+#setup { max-width: 640px; margin: 40px auto; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 22px 24px; }
+#setup h2 { margin-top: 0; font-size: 18px; }
+#setup input[type=password] { width: 100%; font: 13px var(--mono); padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--ink); }
+#setup ul { padding-left: 18px; color: var(--ink-2); }
+#setup code { font: 12px var(--mono); }
+#setup .actions { display: flex; gap: 10px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+#setup button.primary { background: var(--ink); color: var(--surface); border-color: var(--ink); padding: 7px 14px; font-size: 13px; }
+[hidden] { display: none !important; }
+#tip { position: fixed; pointer-events: none; background: var(--ink); color: var(--surface); font-size: 12px; padding: 5px 8px; border-radius: 6px; max-width: 320px; z-index: 10; white-space: pre-line; }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>CI / CD</h1>
+  <div class="meta">
+    <span><span id="live" class="live-dot"></span><span id="status">not connected</span></span>
+    <span id="rate"></span>
+    <button id="refresh" type="button">Refresh</button>
+    <button id="settings" type="button">Token</button>
+  </div>
+</header>
+
+<div id="setup" hidden>
+  <h2>Connect to GitHub</h2>
+  <p class="sub">The dashboard calls the GitHub API straight from this browser. It needs a
+    <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">fine-grained personal access token</a>
+    limited to the repositories below, with these <b>read-only</b> repository permissions:</p>
+  <ul>
+    <li><code>Actions: Read</code> - workflow runs, jobs, queue</li>
+    <li><code>Administration: Read</code> - self-hosted runners (idle / busy / offline)</li>
+    <li><code>Contents: Read</code> - commits not yet deployed</li>
+    <li><code>Metadata: Read</code> (selected automatically)</li>
+  </ul>
+  <p class="sub" id="setup-repos"></p>
+  <input id="token" type="password" placeholder="github_pat_..." autocomplete="off">
+  <div class="actions">
+    <label class="sub"><input id="remember" type="checkbox" checked> Remember on this device</label>
+    <button class="primary" id="save" type="button">Connect</button>
+    <button id="forget" type="button">Forget token</button>
+  </div>
+</div>
+
+<main id="board" hidden></main>
+<div id="tip" hidden></div>
+
+<script>
+// ---- Configuration -------------------------------------------------------
+// `pools`: runner labels that jobs target in `runs-on`. Each gets its own row
+// so a dead pool (e.g. the only deploy box offline) is visible even when the
+// project as a whole still has idle runners.
+// `health`: workflows whose last 10 completed runs on `branch` make the CI
+// health score. Cancelled and skipped runs are left out (concurrency cancels).
+// `deploys`: a deploy counts only when the named job itself succeeded, since a
+// green run can skip its deploy job (build-only dispatch, newer sha deployed).
+const CONFIG = {
+  owner: "s-a-n-i-n",
+  pollSeconds: 30,
+  projects: [
+    {
+      name: "Theriak", repo: "Theriak", branch: "master",
+      pools: ["theriak-ci"],
+      health: [{ workflow: "deploy.yml" }],
+      deploys: [{ workflow: "deploy.yml", job: "Deploy to production" }],
+      nightly: { workflow: "health.yml", label: "Project health" },
+    },
+    {
+      name: "VIMS", repo: "VIMS", branch: "main",
+      pools: ["build-vims", "deploy-vims", "vims-ci-linux", "vims-e2e-db", "vims-e2e-2"],
+      health: [{ workflow: "ci.yml" }],
+      deploys: [
+        { workflow: "deploy-iis.yml", job: "Deploy to IIS", label: "IIS" },
+        { workflow: "deploy-iis-new-ui.yml", job: "Deploy to IIS (new UI)", label: "IIS new UI" },
+      ],
+      nightly: { workflow: "ci-nightly.yml", label: "Nightly full suite" },
+    },
+  ],
+};
+
+// ---- Storage (token) -----------------------------------------------------
+const KEY = "ci-dashboard-token";
+function loadToken() {
+  try { return sessionStorage.getItem(KEY) || localStorage.getItem(KEY) || ""; } catch { return ""; }
+}
+function saveToken(t, remember) {
+  try {
+    sessionStorage.setItem(KEY, t);
+    if (remember) localStorage.setItem(KEY, t); else localStorage.removeItem(KEY);
+  } catch {}
+}
+function forgetToken() { try { sessionStorage.removeItem(KEY); localStorage.removeItem(KEY); } catch {} }
+let token = loadToken();
+
+// ---- GitHub API with ETag caching ---------------------------------------
+// Conditional requests that come back 304 don't count against the rate limit,
+// which keeps a 30 s poll of two repos far below 5000 requests/hour.
+const etagCache = new Map();
+const rate = { remaining: null, limit: null, reset: null };
+class ApiError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
+
+async function gh(path) {
+  const url = path.startsWith("http") ? path : "https://api.github.com" + path;
+  const headers = {
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+    Authorization: "Bearer " + token,
+  };
+  const cached = etagCache.get(url);
+  if (cached) headers["If-None-Match"] = cached.etag;
+  const res = await fetch(url, { headers, cache: "no-store" });
+  const rem = res.headers.get("x-ratelimit-remaining");
+  if (rem !== null) {
+    rate.remaining = +rem;
+    rate.limit = +res.headers.get("x-ratelimit-limit");
+    rate.reset = +res.headers.get("x-ratelimit-reset");
+  }
+  if (res.status === 304 && cached) return cached.data;
+  if (!res.ok) {
+    let msg = res.statusText;
+    try { msg = (await res.json()).message || msg; } catch {}
+    throw new ApiError(res.status, msg);
+  }
+  const data = await res.json();
+  const etag = res.headers.get("etag");
+  if (etag) etagCache.set(url, { etag, data });
+  return data;
+}
+
+function explain(e, permission) {
+  if (e instanceof ApiError) {
+    if (e.status === 401) return "Token rejected (401). Check or replace it.";
+    if (e.status === 403 || e.status === 404) {
+      if (/rate limit/i.test(e.message)) return "GitHub rate limit hit; waiting for reset.";
+      return `No access (${e.status}). The token needs "${permission}" on this repo.`;
+    }
+    return `GitHub ${e.status}: ${e.message}`;
+  }
+  return "Network error: " + e.message;
+}
+
+// Jobs of a completed run never change, so they are kept for the session.
+const finishedJobs = new Map();
+async function runJobs(p, run) {
+  if (run.status === "completed" && finishedJobs.has(run.id)) return finishedJobs.get(run.id);
+  const d = await gh(`/repos/${CONFIG.owner}/${p.repo}/actions/runs/${run.id}/jobs?per_page=100&filter=latest`);
+  if (run.status === "completed") finishedJobs.set(run.id, d.jobs);
+  return d.jobs;
+}
+
+// ---- Collectors ----------------------------------------------------------
+const base = p => `/repos/${CONFIG.owner}/${p.repo}`;
+
+async function collectRunners(p) {
+  const d = await gh(`${base(p)}/actions/runners?per_page=100`);
+  return d.runners.map(r => ({
+    name: r.name,
+    state: r.status !== "online" ? "offline" : r.busy ? "busy" : "idle",
+    labels: r.labels.map(l => l.name),
+  }));
+}
+
+async function collectActivity(p) {
+  // Runs that are queued, running, or waiting on an environment approval.
+  const [q, ip, w] = await Promise.all(["queued", "in_progress", "waiting"].map(s =>
+    gh(`${base(p)}/actions/runs?status=${s}&per_page=50`)));
+  const runs = [...q.workflow_runs, ...ip.workflow_runs];
+  const jobLists = await Promise.all(runs.map(r => runJobs(p, r).then(js => js.map(j => ({ ...j, run: r })))));
+  const jobs = jobLists.flat();
+  return {
+    queued: jobs.filter(j => j.status === "queued" || j.status === "waiting" || j.status === "pending")
+      .sort((a, b) => new Date(a.created_at) - new Date(b.created_at)),
+    running: jobs.filter(j => j.status === "in_progress")
+      .sort((a, b) => new Date(a.started_at) - new Date(b.started_at)),
+    awaitingApproval: w.workflow_runs.length,
+  };
+}
+
+async function collectHealth(p) {
+  const lists = await Promise.all(p.health.map(h =>
+    gh(`${base(p)}/actions/workflows/${h.workflow}/runs?branch=${encodeURIComponent(h.branch || p.branch)}&status=completed&per_page=30`)));
+  const runs = lists.flatMap(l => l.workflow_runs)
+    .filter(r => r.conclusion === "success" || r.conclusion === "failure" || r.conclusion === "timed_out")
+    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+    .slice(0, 10)
+    .reverse(); // oldest -> newest, read left to right
+  const durations = runs.map(r => new Date(r.updated_at) - new Date(r.run_started_at || r.created_at)).sort((a, b) => a - b);
+  const median = durations.length ? durations[Math.floor(durations.length / 2)] : null;
+  let streak = 0;
+  for (let i = runs.length - 1; i >= 0 && runs[i].conclusion !== "success"; i--) streak++;
+  return { runs, median, streak };
+}
+
+async function collectDeploy(p) {
+  const found = [];
+  for (const d of p.deploys) {
+    const list = await gh(`${base(p)}/actions/workflows/${d.workflow}/runs?status=success&per_page=10`);
+    for (const run of list.workflow_runs) {
+      const jobs = await runJobs(p, run);
+      const job = jobs.find(j => j.name === d.job && j.conclusion === "success");
+      if (job) { found.push({ ...d, run, at: job.completed_at }); break; }
+    }
+  }
+  if (!found.length) return null;
+  found.sort((a, b) => new Date(b.at) - new Date(a.at));
+  const last = found[0];
+  let behind = null, behindErr = null;
+  try {
+    const cmp = await gh(`${base(p)}/compare/${last.run.head_sha}...${encodeURIComponent(p.branch)}`);
+    behind = cmp.ahead_by;
+  } catch (e) { behindErr = explain(e, "Contents: Read"); }
+  return { last, others: found.slice(1), behind, behindErr };
+}
+
+async function collectNightly(p) {
+  if (!p.nightly) return null;
+  const d = await gh(`${base(p)}/actions/workflows/${p.nightly.workflow}/runs?status=completed&per_page=1`);
+  return d.workflow_runs[0] || null;
+}
+
+async function settle(fn, permission) {
+  try { return { ok: true, v: await fn() }; } catch (e) { return { ok: false, err: explain(e, permission), e }; }
+}
+
+async function collect(p) {
+  const [runners, activity, health, deploy, nightly] = await Promise.all([
+    settle(() => collectRunners(p), "Administration: Read"),
+    settle(() => collectActivity(p), "Actions: Read"),
+    settle(() => collectHealth(p), "Actions: Read"),
+    settle(() => collectDeploy(p), "Actions: Read"),
+    settle(() => collectNightly(p), "Actions: Read"),
+  ]);
+  return { runners, activity, health, deploy, nightly, at: Date.now() };
+}
+
+// ---- Formatting ----------------------------------------------------------
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+function dur(ms) {
+  if (ms == null || ms < 0) return "-";
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s + "s";
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + "m " + String(s % 60).padStart(2, "0") + "s";
+  const h = Math.floor(m / 60);
+  if (h < 48) return h + "h " + String(m % 60).padStart(2, "0") + "m";
+  return Math.floor(h / 24) + "d " + (h % 24) + "h";
+}
+function ago(iso) {
+  if (!iso) return "-";
+  const ms = Date.now() - new Date(iso);
+  if (ms < 60000) return "just now";
+  const m = Math.floor(ms / 60000);
+  if (m < 60) return m + " min ago";
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + " h ago";
+  const d = Math.floor(h / 24);
+  return d === 1 ? "yesterday" : d + " days ago";
+}
+const fmtDate = iso => new Date(iso).toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+
+// ---- Rendering -----------------------------------------------------------
+const state = new Map(); // project name -> last collected data
+function errBlock(r) { return r.ok ? "" : `<div class="err">${esc(r.err)}</div>`; }
+
+function renderRunners(p, d) {
+  const r = d.runners;
+  if (!r.ok) return `<section class="tile"><h3>Runners</h3>${errBlock(r)}</section>`;
+  const all = r.v;
+  const count = s => all.filter(x => x.state === s).length;
+  const queued = d.activity.ok ? d.activity.v.queued : [];
+  const pools = p.pools && p.pools.length ? p.pools
+    : [...new Set(all.flatMap(x => x.labels).filter(l => !["self-hosted", "linux", "windows", "macos", "x64", "arm64", "X64", "ARM64", "Linux", "Windows"].includes(l)))];
+  const rows = pools.map(pool => {
+    const members = all.filter(x => x.labels.includes(pool));
+    const waiting = queued.filter(j => (j.labels || []).includes(pool)).length;
+    const online = members.filter(x => x.state !== "offline").length;
+    const hot = waiting > 0 && online === 0;
+    const sq = members.length
+      ? members.map(m => `<span class="sq ${m.state}" data-tip="${esc(m.name)}: ${m.state}"></span>`).join("")
+      : `<span class="sq none">no runners</span>`;
+    const qText = waiting ? `${waiting} waiting${hot ? " · no runner online" : ""}` : "";
+    return `<span class="pool-name">${esc(pool)}</span><span class="squares">${sq}</span><span class="pool-q${hot ? " hot" : ""}">${qText}</span>`;
+  }).join("");
+  return `<section class="tile">
+    <h3>Runners <span>${all.length} registered</span></h3>
+    <div class="stats">
+      <div class="stat"><div class="n">${count("busy")}</div><div class="l"><i class="sw busy"></i>Busy</div></div>
+      <div class="stat"><div class="n">${count("idle")}</div><div class="l"><i class="sw idle"></i>Idle</div></div>
+      <div class="stat"><div class="n"${count("offline") ? ' style="color:var(--offline)"' : ""}>${count("offline")}</div><div class="l"><i class="sw offline"></i>Offline</div></div>
+    </div>
+    ${rows ? `<div class="pools">${rows}</div>` : ""}
+  </section>`;
+}
+
+function renderQueue(p, d) {
+  const a = d.activity;
+  if (!a.ok) return `<section class="tile"><h3>Queue</h3>${errBlock(a)}</section>`;
+  const { queued, running, awaitingApproval } = a.v;
+  const oldest = queued[0];
+  const waitMs = oldest ? Date.now() - new Date(oldest.created_at) : 0;
+  const slow = waitMs > 10 * 60000;
+  const items = [
+    ...queued.slice(0, 4).map(j => ({ j, cls: "queued", t: "waiting " + dur(Date.now() - new Date(j.created_at)) })),
+    ...running.slice(0, 5).map(j => ({ j, cls: "running", t: "running " + dur(Date.now() - new Date(j.started_at)) })),
+  ];
+  const list = items.length ? `<ul class="joblist">${items.map(({ j, cls, t }) =>
+    `<li><i class="sw ${cls === "queued" ? "queued" : "busy"}" style="margin-top:4px;flex:none"></i>
+     <a class="nm" href="${esc(j.html_url)}" target="_blank" rel="noopener" data-tip="${esc(j.run.name)} · ${esc(j.run.head_branch)}${j.runner_name ? "\non " + esc(j.runner_name) : ""}">${esc(j.name)}</a>
+     <span class="t">${t}</span></li>`).join("")}</ul>` : "";
+  return `<section class="tile">
+    <h3>Queue <span>${running.length} running</span></h3>
+    <div class="big">${queued.length}<small> job${queued.length === 1 ? "" : "s"} waiting</small></div>
+    <div class="sub ${oldest ? (slow ? "warn-text" : "") : "mute"}">${oldest ? "oldest waiting " + dur(waitMs) : "nothing waiting for a runner"}</div>
+    ${awaitingApproval ? `<div class="sub">${awaitingApproval} run${awaitingApproval === 1 ? "" : "s"} awaiting environment approval</div>` : ""}
+    ${list}
+  </section>`;
+}
+
+function renderDeploy(p, d) {
+  const r = d.deploy;
+  let body;
+  if (!r.ok) body = errBlock(r);
+  else if (!r.v) body = `<div class="sub mute">No successful deploy in the last 10 successful runs.</div>`;
+  else {
+    const { last, others, behind, behindErr } = r.v;
+    const run = last.run;
+    const behindText = behindErr ? `<div class="err">${esc(behindErr)}</div>`
+      : behind == null ? "" : behind === 0
+        ? `<div class="sub">${esc(p.branch)} is fully deployed</div>`
+        : `<div class="sub"><b>${behind}</b> commit${behind === 1 ? "" : "s"} on ${esc(p.branch)} not deployed yet</div>`;
+    body = `<div class="big" style="font-size:24px">${esc(ago(last.at))}</div>
+      <div class="sub">${esc(fmtDate(last.at))}${last.label ? " · " + esc(last.label) : ""}</div>
+      <div class="sub mute"><a href="${esc(run.html_url)}" target="_blank" rel="noopener" class="sha">${esc(run.head_sha.slice(0, 7))}</a>
+        · ${esc(run.head_branch)} · by ${esc(run.triggering_actor?.login || run.actor?.login || "?")}</div>
+      ${behindText}
+      ${others.map(o => `<div class="sub mute" style="margin-top:4px">${esc(o.label || o.workflow)}: ${esc(ago(o.at))}</div>`).join("")}`;
+  }
+  return `<section class="tile"><h3>Last deployment</h3>${body}</section>`;
+}
+
+function renderHealth(p, d) {
+  const r = d.health;
+  let body;
+  if (!r.ok) body = errBlock(r);
+  else {
+    const { runs, median } = r.v;
+    const ok = runs.filter(x => x.conclusion === "success").length;
+    const color = !runs.length ? "" : ok === runs.length ? "var(--ok)" : ok / runs.length >= 0.8 ? "var(--warn)" : "var(--fail)";
+    const dots = runs.map(x => {
+      const good = x.conclusion === "success";
+      const tip = `${x.name} #${x.run_number} · ${x.conclusion}\n${x.display_title}\n${fmtDate(x.created_at)} · ${dur(new Date(x.updated_at) - new Date(x.run_started_at || x.created_at))}`;
+      return `<a class="dot ${good ? "success" : "failure"}" href="${esc(x.html_url)}" target="_blank" rel="noopener" data-tip="${esc(tip)}" aria-label="${esc(tip)}">${good ? "✓" : "✗"}</a>`;
+    });
+    while (dots.length < 10) dots.unshift(`<span class="dot empty"></span>`);
+    body = `<div class="big"><span style="color:${color}">${ok}</span><small> / ${runs.length}</small></div>
+      <div class="dots">${dots.join("")}</div>
+      <div class="sub mute">oldest → newest on ${esc(p.branch)}${median != null ? " · median " + dur(median) : ""}</div>`;
+  }
+  const nr = d.nightly;
+  let night = "";
+  if (p.nightly) {
+    if (!nr.ok) night = errBlock(nr);
+    else if (nr.v) {
+      const good = nr.v.conclusion === "success";
+      night = `<div class="sub" style="margin-top:8px">${esc(p.nightly.label)}:
+        <a href="${esc(nr.v.html_url)}" target="_blank" rel="noopener" style="color:${good ? "var(--ok)" : "var(--fail)"};font-weight:600;text-decoration:none">${good ? "✓ passed" : "✗ " + esc(nr.v.conclusion)}</a>
+        <span class="mute">${esc(ago(nr.v.updated_at))}</span></div>`;
+    }
+  }
+  return `<section class="tile"><h3>CI health <span>last 10 runs</span></h3>${body}${night}</section>`;
+}
+
+function headChip(p, d) {
+  if (!d.health.ok || !d.health.v.runs.length) return "";
+  const { runs, streak } = d.health.v;
+  if (!streak) return `<span class="chip ok">${esc(p.branch)} passing</span>`;
+  const since = runs[runs.length - streak];
+  return `<span class="chip fail" data-tip="first failure ${esc(fmtDate(since.created_at))}">${esc(p.branch)} failing · ${streak} run${streak === 1 ? "" : "s"}</span>`;
+}
+
+function render() {
+  const board = document.getElementById("board");
+  board.innerHTML = CONFIG.projects.map(p => {
+    const d = state.get(p.name);
+    const title = `<h2><a href="https://github.com/${CONFIG.owner}/${p.repo}/actions" target="_blank" rel="noopener">${esc(p.name)}</a>
+      <span class="branch">${esc(p.branch)}</span>${d ? headChip(p, d) : ""}</h2>`;
+    if (!d) return `<article class="project">${title}<section class="tile"><div class="sub mute">Loading…</div></section></article>`;
+    return `<article class="project">${title}
+      ${renderRunners(p, d)}
+      <div class="row2">${renderQueue(p, d)}${renderDeploy(p, d)}</div>
+      ${renderHealth(p, d)}
+    </article>`;
+  }).join("");
+  const rateEl = document.getElementById("rate");
+  rateEl.textContent = rate.remaining != null ? `API ${rate.remaining}/${rate.limit}` : "";
+}
+
+// ---- Poll loop -----------------------------------------------------------
+let timer = null, lastOk = null, inFlight = false;
+function setStatus(text, cls) {
+  document.getElementById("status").textContent = text;
+  document.getElementById("live").className = "live-dot " + (cls || "");
+}
+async function poll() {
+  if (inFlight || !token) return;
+  inFlight = true;
+  clearTimeout(timer);
+  try {
+    const results = await Promise.all(CONFIG.projects.map(collect));
+    CONFIG.projects.forEach((p, i) => state.set(p.name, results[i]));
+    const authFail = results.some(r => Object.values(r).some(x => x && x.e && x.e.status === 401));
+    if (authFail) { setStatus("token rejected", "err"); showSetup(true); return; }
+    lastOk = Date.now();
+    setStatus("live", "on");
+    render();
+  } catch (e) {
+    setStatus("error: " + e.message, "err");
+  } finally {
+    inFlight = false;
+    if (!document.hidden && token) timer = setTimeout(poll, CONFIG.pollSeconds * 1000);
+  }
+}
+// Re-render every 15 s so "waiting 4m" and "12 min ago" keep moving between polls.
+setInterval(() => {
+  if (!lastOk || document.getElementById("board").hidden) return;
+  render();
+  const s = Math.round((Date.now() - lastOk) / 1000);
+  if (s > CONFIG.pollSeconds * 3) setStatus(`stale · updated ${s}s ago`, "err");
+}, 15000);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) clearTimeout(timer); else poll();
+});
+
+// ---- Setup / token UI ----------------------------------------------------
+function showSetup(show) {
+  document.getElementById("setup").hidden = !show;
+  document.getElementById("board").hidden = show;
+  if (show) {
+    document.getElementById("setup-repos").innerHTML = "Repositories: " +
+      CONFIG.projects.map(p => `<code>${esc(CONFIG.owner)}/${esc(p.repo)}</code>`).join(", ");
+    document.getElementById("token").focus();
+  }
+}
+document.getElementById("save").onclick = () => {
+  const t = document.getElementById("token").value.trim();
+  if (!t) return;
+  token = t;
+  saveToken(t, document.getElementById("remember").checked);
+  document.getElementById("token").value = "";
+  etagCache.clear();
+  showSetup(false);
+  render();
+  poll();
+};
+document.getElementById("token").addEventListener("keydown", e => { if (e.key === "Enter") document.getElementById("save").click(); });
+document.getElementById("forget").onclick = () => {
+  forgetToken(); token = ""; state.clear(); etagCache.clear(); clearTimeout(timer);
+  setStatus("not connected"); showSetup(true);
+};
+document.getElementById("settings").onclick = () => showSetup(document.getElementById("setup").hidden);
+document.getElementById("refresh").onclick = () => poll();
+
+// Hover tooltips for runner squares, CI dots and job names.
+const tip = document.getElementById("tip");
+document.addEventListener("mouseover", e => {
+  const el = e.target.closest("[data-tip]");
+  if (!el) { tip.hidden = true; return; }
+  tip.textContent = el.dataset.tip;
+  tip.hidden = false;
+});
+document.addEventListener("mousemove", e => {
+  if (tip.hidden) return;
+  const x = Math.min(e.clientX + 12, window.innerWidth - tip.offsetWidth - 8);
+  tip.style.left = x + "px"; tip.style.top = (e.clientY + 14) + "px";
+});
+
+if (token) { showSetup(false); render(); poll(); } else showSetup(true);
+</script>
+</body>
+</html>
